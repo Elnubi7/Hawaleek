@@ -40,37 +40,28 @@ service cloud.firestore {
     }
 
     function validInitialRoleFields() {
-      return (request.resource.data.role == 'patient'
-          && request.resource.data.keys().hasAll(['dateOfBirth'])
-          && request.resource.data.dateOfBirth is timestamp
-          && request.resource.data.dateOfBirth <= request.time
-          && (!('chronicDiseases' in request.resource.data)
-            || (request.resource.data.chronicDiseases is string && request.resource.data.chronicDiseases.size() <= 1000))
-          && (!('emergencyContact' in request.resource.data)
-            || (request.resource.data.emergencyContact is string && request.resource.data.emergencyContact.matches('^\\+201[0125][0-9]{8}$')))
-          && !('verificationStatus' in request.resource.data)
-          && !('specialty' in request.resource.data)
-          && !('relationship' in request.resource.data))
-        || (request.resource.data.role == 'family'
+      return (request.resource.data.role == 'family'
           && !('dateOfBirth' in request.resource.data)
           && !('chronicDiseases' in request.resource.data)
-          && !('emergencyContact' in request.resource.data)
           && !('verificationStatus' in request.resource.data)
           && !('specialty' in request.resource.data)
-          && (!('relationship' in request.resource.data) || request.resource.data.relationship is string))
+          && (!('relationship' in request.resource.data) || request.resource.data.relationship is string)
+          && (!('emergencyContact' in request.resource.data)
+            || (request.resource.data.emergencyContact is string && request.resource.data.emergencyContact.matches('^\\+201[0125][0-9]{8}$'))))
         || (request.resource.data.role == 'doctor'
           && request.resource.data.verificationStatus == 'pending'
           && (!('specialty' in request.resource.data) || request.resource.data.specialty is string)
           && !('dateOfBirth' in request.resource.data)
           && !('chronicDiseases' in request.resource.data)
-          && !('emergencyContact' in request.resource.data)
-          && !('relationship' in request.resource.data));
+          && !('relationship' in request.resource.data)
+          && (!('emergencyContact' in request.resource.data)
+            || (request.resource.data.emergencyContact is string && request.resource.data.emergencyContact.matches('^\\+201[0125][0-9]{8}$'))));
     }
 
     match /users/{uid} {
       allow create: if isSelf(uid)
         && validCommonProfile(uid)
-        && request.resource.data.role in ['patient', 'family', 'doctor']
+        && request.resource.data.role in ['family', 'doctor']
         && validInitialRoleFields();
 
       allow get: if isSelf(uid)
@@ -81,12 +72,14 @@ service cloud.firestore {
 
       allow update: if isSelf(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'fullName', 'phoneNumber', 'updatedAt'
+          'fullName', 'phoneNumber', 'emergencyContact', 'updatedAt'
         ])
         && request.resource.data.fullName is string
         && request.resource.data.fullName.size() > 0
         && request.resource.data.phoneNumber is string
         && request.resource.data.phoneNumber.matches('^\\+201[0125][0-9]{8}$')
+        && (!('emergencyContact' in request.resource.data)
+          || (request.resource.data.emergencyContact is string && request.resource.data.emergencyContact.matches('^\\+201[0125][0-9]{8}$')))
         && request.resource.data.updatedAt is timestamp;
 
       allow update: if signedIn()

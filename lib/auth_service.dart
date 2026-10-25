@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 
 import 'core.dart';
 import 'validators.dart';
@@ -28,8 +29,6 @@ class AuthService {
     required String email,
     required String password,
     required String phoneNumber,
-    DateTime? dateOfBirth,
-    String? chronicDiseases,
     String? emergencyContact,
     String? relationship,
     String? specialty,
@@ -43,8 +42,6 @@ class AuthService {
       fullName: fullName,
       email: email,
       phoneNumber: phoneNumber,
-      dateOfBirth: dateOfBirth,
-      chronicDiseases: chronicDiseases,
       emergencyContact: emergencyContact,
       relationship: relationship,
       specialty: specialty,
@@ -56,14 +53,13 @@ class AuthService {
     required String fullName,
     required String email,
     required String phoneNumber,
-    DateTime? dateOfBirth,
-    String? chronicDiseases,
     String? emergencyContact,
     String? relationship,
     String? specialty,
   }) async {
     final user = _auth.currentUser;
-    if (user == null || user.email?.toLowerCase() != email.trim().toLowerCase()) {
+    if (user == null ||
+        user.email?.toLowerCase() != email.trim().toLowerCase()) {
       throw StateError('No matching signed-in account');
     }
     final existing = await _db.collection('users').doc(user.uid).get();
@@ -84,50 +80,61 @@ class AuthService {
       'createdAt': now,
       'updatedAt': now,
     };
-    if (role == UserRole.patient) {
-      data['dateOfBirth'] = Timestamp.fromDate(dateOfBirth!);
-      final diseases = chronicDiseases?.trim();
-      final emergency = emergencyContact?.trim();
-      if (diseases != null && diseases.isNotEmpty) data['chronicDiseases'] = diseases;
-      if (emergency != null && emergency.isNotEmpty) {
-        data['emergencyContact'] = Validators.normalizeEgyptianPhone(emergency);
-      }
+    final emergency = emergencyContact?.trim();
+    if (emergency != null && emergency.isNotEmpty) {
+      data['emergencyContact'] = Validators.normalizeEgyptianPhone(emergency);
     }
     if (role == UserRole.family && (relationship?.trim().isNotEmpty ?? false)) {
       data['relationship'] = relationship!.trim();
     }
     if (role == UserRole.doctor) {
       data['verificationStatus'] = 'pending';
-      if (specialty?.trim().isNotEmpty ?? false) data['specialty'] = specialty!.trim();
+      if (specialty?.trim().isNotEmpty ?? false)
+        data['specialty'] = specialty!.trim();
     }
     await _db.collection('users').doc(user.uid).set(data);
   }
 
   Future<void> signIn(String email, String password) async =>
-      _auth.signInWithEmailAndPassword(email: email.trim().toLowerCase(), password: password);
+      _auth.signInWithEmailAndPassword(
+        email: email.trim().toLowerCase(),
+        password: password,
+      );
 
   Future<void> sendPasswordReset(String email) async =>
       _auth.sendPasswordResetEmail(email: email.trim().toLowerCase());
 
   Future<void> signOut() => _auth.signOut();
 
-  Future<void> updateOwnProfile({required String fullName, required String phoneNumber}) async {
+  Future<void> updateOwnProfile({
+    required String fullName,
+    required String phoneNumber,
+    String? emergencyContact,
+  }) async {
     final user = _auth.currentUser!;
+    final emergency = emergencyContact?.trim();
     await _db.collection('users').doc(user.uid).update({
       'fullName': fullName.trim(),
       'phoneNumber': Validators.normalizeEgyptianPhone(phoneNumber),
+      if (emergency != null && emergency.isNotEmpty)
+        'emergencyContact': Validators.normalizeEgyptianPhone(emergency)
+      else
+        'emergencyContact': FieldValue.delete(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
   Future<void> createFamilyRequest(String patientUid) async {
     final familyUid = _auth.currentUser!.uid;
-    await _db.collection('patientFamilyLinks').doc('${patientUid.trim()}_$familyUid').set({
-      'patientUid': patientUid.trim(),
-      'familyUid': familyUid,
-      'status': 'pending',
-      'requestedAt': FieldValue.serverTimestamp(),
-    });
+    await _db
+        .collection('patientFamilyLinks')
+        .doc('${patientUid.trim()}_$familyUid')
+        .set({
+          'patientUid': patientUid.trim(),
+          'familyUid': familyUid,
+          'status': 'pending',
+          'requestedAt': FieldValue.serverTimestamp(),
+        });
   }
 
   Future<void> setFamilyRequestStatus(String linkId, String status) async {
@@ -141,28 +148,38 @@ class AuthService {
       .collection('patientFamilyLinks')
       .where('familyUid', isEqualTo: uid)
       .snapshots();
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> patientRequests(String uid) => _db
-      .collection('patientFamilyLinks')
-      .where('patientUid', isEqualTo: uid)
-      .snapshots();
 }
 
 String firebaseMessage(Object error) {
   if (error is FirebaseAuthException) {
+    if (kDebugMode) {
+      debugPrint(
+        'Firebase Authentication failed [${error.code}]: ${error.message}',
+      );
+    }
     return switch (error.code) {
-      'email-already-in-use' => 'هذا البريد مسجل بالفعل. سجّل الدخول بدلًا من إنشاء حساب جديد.',
+      'email-already-in-use' =>
+        'هذا البريد مسجل بالفعل. سجّل الدخول بدلًا من إنشاء حساب جديد.',
       'invalid-email' => 'صيغة البريد الإلكتروني غير صحيحة.',
       'weak-password' => 'كلمة المرور ضعيفة. استخدم 8 أحرف على الأقل.',
-      'user-not-found' || 'wrong-password' || 'invalid-credential' || 'invalid-login-credentials' => 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
+      'user-not-found' ||
+      'wrong-password' ||
+      'invalid-credential' ||
+      'invalid-login-credentials' =>
+        'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
       'user-disabled' => 'تم إيقاف هذا الحساب. تواصل مع الدعم.',
-      'operation-not-allowed' => 'فعّل تسجيل الدخول بالبريد وكلمة المرور من إعدادات Firebase.',
-      'network-request-failed' => 'تعذر الاتصال بالإنترنت. تحقق من اتصالك وحاول مرة أخرى.',
+      'operation-not-allowed' =>
+        'فعّل تسجيل الدخول بالبريد وكلمة المرور من إعدادات Firebase.',
+      'network-request-failed' =>
+        'تعذر الاتصال بالإنترنت. تحقق من اتصالك وحاول مرة أخرى.',
       'too-many-requests' => 'محاولات كثيرة. انتظر قليلًا ثم حاول مرة أخرى.',
       _ => 'تعذر إكمال العملية. حاول مرة أخرى.',
     };
   }
   if (error is FirebaseException) {
+    if (kDebugMode) {
+      debugPrint('Cloud Firestore failed [${error.code}]: ${error.message}');
+    }
     return switch (error.code) {
       'permission-denied' => 'ليست لديك صلاحية لتنفيذ هذا الإجراء.',
       'unavailable' => 'الخدمة غير متاحة حاليًا. تحقق من اتصالك بالإنترنت.',
