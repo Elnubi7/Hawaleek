@@ -1,0 +1,135 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function userRole(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data.role;
+    }
+
+    function approvedFamilyLink(patientUid, familyUid) {
+      let linkId = patientUid + '_' + familyUid;
+      return exists(/databases/$(database)/documents/patientFamilyLinks/$(linkId))
+        && get(/databases/$(database)/documents/patientFamilyLinks/$(linkId)).data.status == 'approved';
+    }
+
+    function validCommonProfile(uid) {
+      return request.resource.data.keys().hasAll([
+          'uid', 'fullName', 'email', 'phoneNumber', 'role', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'fullName', 'email', 'phoneNumber', 'role', 'isActive',
+          'createdAt', 'updatedAt', 'dateOfBirth', 'chronicDiseases',
+          'emergencyContact', 'relationship', 'specialty', 'verificationStatus'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() > 0
+        && request.resource.data.email is string
+        && request.resource.data.phoneNumber is string
+        && request.resource.data.phoneNumber.matches('^\\+201[0125][0-9]{8}$')
+        && request.resource.data.isActive == true
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    function validInitialRoleFields() {
+      return (request.resource.data.role == 'patient'
+          && request.resource.data.keys().hasAll(['dateOfBirth'])
+          && request.resource.data.dateOfBirth is timestamp
+          && request.resource.data.dateOfBirth <= request.time
+          && (!('chronicDiseases' in request.resource.data)
+            || (request.resource.data.chronicDiseases is string && request.resource.data.chronicDiseases.size() <= 1000))
+          && (!('emergencyContact' in request.resource.data)
+            || (request.resource.data.emergencyContact is string && request.resource.data.emergencyContact.matches('^\\+201[0125][0-9]{8}$')))
+          && !('verificationStatus' in request.resource.data)
+          && !('specialty' in request.resource.data)
+          && !('relationship' in request.resource.data))
+        || (request.resource.data.role == 'family'
+          && !('dateOfBirth' in request.resource.data)
+          && !('chronicDiseases' in request.resource.data)
+          && !('emergencyContact' in request.resource.data)
+          && !('verificationStatus' in request.resource.data)
+          && !('specialty' in request.resource.data)
+          && (!('relationship' in request.resource.data) || request.resource.data.relationship is string))
+        || (request.resource.data.role == 'doctor'
+          && request.resource.data.verificationStatus == 'pending'
+          && (!('specialty' in request.resource.data) || request.resource.data.specialty is string)
+          && !('dateOfBirth' in request.resource.data)
+          && !('chronicDiseases' in request.resource.data)
+          && !('emergencyContact' in request.resource.data)
+          && !('relationship' in request.resource.data));
+    }
+
+    match /users/{uid} {
+      allow create: if isSelf(uid)
+        && validCommonProfile(uid)
+        && request.resource.data.role in ['patient', 'family', 'doctor']
+        && validInitialRoleFields();
+
+      allow get: if isSelf(uid)
+        || (signedIn() && resource.data.role == 'patient'
+          && approvedFamilyLink(uid, request.auth.uid)
+          && userRole(request.auth.uid) == 'family');
+      allow list: if false;
+
+      allow update: if isSelf(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'fullName', 'phoneNumber', 'updatedAt'
+        ])
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() > 0
+        && request.resource.data.phoneNumber is string
+        && request.resource.data.phoneNumber.matches('^\\+201[0125][0-9]{8}$')
+        && request.resource.data.updatedAt is timestamp;
+
+      allow update: if signedIn()
+        && request.auth.token.admin == true
+        && resource.data.role == 'doctor'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['verificationStatus', 'updatedAt'])
+        && request.resource.data.verificationStatus in ['verified', 'rejected']
+        && request.resource.data.updatedAt is timestamp;
+
+      allow delete: if false;
+    }
+
+    match /patientFamilyLinks/{linkId} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['patientUid', 'familyUid', 'status', 'requestedAt'])
+        && request.resource.data.keys().hasAll(['patientUid', 'familyUid', 'status', 'requestedAt'])
+        && request.resource.data.patientUid is string
+        && request.resource.data.patientUid != request.auth.uid
+        && request.resource.data.familyUid == request.auth.uid
+        && userRole(request.auth.uid) == 'family'
+        && userRole(request.resource.data.patientUid) == 'patient'
+        && linkId == request.resource.data.patientUid + '_' + request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.requestedAt is timestamp;
+
+      allow get, list: if signedIn()
+        && (resource.data.familyUid == request.auth.uid || resource.data.patientUid == request.auth.uid);
+
+      allow update: if signedIn()
+        && resource.data.patientUid == request.auth.uid
+        && userRole(request.auth.uid) == 'patient'
+        && request.resource.data.patientUid == resource.data.patientUid
+        && request.resource.data.familyUid == resource.data.familyUid
+        && request.resource.data.requestedAt == resource.data.requestedAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'approvedAt'])
+        && ((resource.data.status == 'pending'
+            && ((request.resource.data.status == 'approved' && request.resource.data.approvedAt is timestamp)
+              || (request.resource.data.status == 'rejected' && !('approvedAt' in request.resource.data))))
+          || (resource.data.status == 'approved'
+            && request.resource.data.status == 'revoked'
+            && request.resource.data.approvedAt == resource.data.approvedAt));
+
+      allow delete: if false;
+    }
+  }
+}
